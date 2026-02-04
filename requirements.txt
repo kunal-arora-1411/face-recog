@@ -2,3 +2,5 @@ streamlit
 opencv-contrib-python-headless
 pandas
 numpy
+streamlit-webrtc
+av
