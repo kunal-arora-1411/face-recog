@@ -13,6 +13,81 @@ st.set_page_config(page_title="Attendance System", layout="wide")
 st.sidebar.title("Navigation")
 choice = st.sidebar.radio("Go to", ["Home", "Mark Attendance", "Register User"])
 
+
+# Define WebRTC Processors at module level to prevent re-definition on script re-run
+class RegistrationProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.count = 0
+        self.user_id = None
+        self.save_path = None
+        self.capturing = False
+        # Load cascade once
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+    def update_config(self, user_id, save_path, capturing):
+        self.user_id = user_id
+        self.save_path = save_path
+        self.capturing = capturing
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        
+        # Ensure we have a valid image
+        if img is None:
+            return av.VideoFrame.from_ndarray(np.zeros((1, 1, 3), dtype=np.uint8), format="bgr24")
+
+        # Capture logic
+        if self.capturing and self.user_id is not None and self.count < 30:
+            saved = utils.save_training_image(img, self.user_id, self.count, self.save_path)
+            if saved:
+                self.count += 1
+        
+        # Draw status
+        cv2.putText(img, f"Captured: {self.count}/30", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+class AttendanceProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.recognizer = utils.load_recognizer()
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.user_map = utils.get_user_map()
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        if img is None:
+             return av.VideoFrame.from_ndarray(np.zeros((1, 1, 3), dtype=np.uint8), format="bgr24")
+             
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, 1.2, 5)
+
+        for (x, y, w, h) in faces:
+            # Predict
+            if self.recognizer:
+                try:
+                    id, confidence = self.recognizer.predict(gray[y:y+h, x:x+w])
+                    
+                    if confidence < 100:
+                        name = self.user_map.get(id, f"User {id}")
+                        utils.mark_attendance(name)
+                        status_text = f"{name}"
+                        status_color = (0, 255, 0)
+                    else:
+                        status_text = "Unknown"
+                        status_color = (0, 0, 255)
+                except Exception as e:
+                    status_text = "Error"
+                    status_color = (0, 0, 255)
+                    print(f"Prediction error: {e}")
+            else:
+                 status_text = "Model not loaded"
+                 status_color = (0, 0, 255)
+
+            cv2.rectangle(img, (x, y), (x+w, y+h), status_color, 2)
+            cv2.putText(img, status_text, (x+6, y+h-6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
 if choice == "Home":
     st.title("Face Recognition Attendance System (OpenCV)")
     st.image("https://media.istockphoto.com/id/1199046636/vector/facial-recognition-system-identification-of-a-person.jpg?s=612x612&w=0&k=20&c=L_vGZ4yJ8M3n0U7m0rJ2b5q_8u3v_9_Z8z_9_Z8z_9.jpg", width=600)
@@ -51,33 +126,6 @@ elif choice == "Register User":
     if "capturing" not in st.session_state:
         st.session_state.capturing = False
     
-    class RegistrationProcessor(VideoProcessorBase):
-        def __init__(self):
-            self.count = 0
-            self.user_id = None
-            self.save_path = None
-            self.capturing = False
-            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-
-        def update_config(self, user_id, save_path, capturing):
-            self.user_id = user_id
-            self.save_path = save_path
-            self.capturing = capturing
-
-        def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            
-            if self.capturing and self.user_id is not None and self.count < 30:
-                # Capture logic
-                saved = utils.save_training_image(img, self.user_id, self.count, self.save_path)
-                if saved:
-                    self.count += 1
-            
-            # Draw status
-            cv2.putText(img, f"Captured: {self.count}/30", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-
     # Start the streamer
     st.info("Click 'Start' to open camera. After camera opens, click 'Start Capture' to begin saving frames.")
     ctx = webrtc_streamer(
@@ -117,37 +165,10 @@ elif choice == "Mark Attendance":
     else:
         st.write("Camera is running... Face recognition active.")
         
-        class AttendanceProcessor(VideoProcessorBase):
-            def __init__(self):
-                self.recognizer = utils.load_recognizer()
-                self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-                self.user_map = utils.get_user_map()
-
-            def recv(self, frame):
-                img = frame.to_ndarray(format="bgr24")
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                faces = self.face_cascade.detectMultiScale(gray, 1.2, 5)
-
-                for (x, y, w, h) in faces:
-                    id, confidence = self.recognizer.predict(gray[y:y+h, x:x+w])
-                    
-                    if confidence < 100:
-                        name = self.user_map.get(id, f"User {id}")
-                        utils.mark_attendance(name)
-                        status_text = f"{name}"
-                        status_color = (0, 255, 0)
-                    else:
-                        status_text = "Unknown"
-                        status_color = (0, 0, 255)
-                    
-                    cv2.rectangle(img, (x, y), (x+w, y+h), status_color, 2)
-                    cv2.putText(img, status_text, (x+6, y+h-6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-
-                return av.VideoFrame.from_ndarray(img, format="bgr24")
-
         webrtc_streamer(
             key="attendance",
             video_processor_factory=AttendanceProcessor,
             rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
         )
+
 
