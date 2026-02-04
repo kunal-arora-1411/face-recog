@@ -1,4 +1,4 @@
 streamlit
-opencv-contrib-python
+opencv-contrib-python-headless
 pandas
 numpy
